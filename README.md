@@ -15,7 +15,7 @@ which you can install with pip.
 
 Most of the Maynuo products have a DB-9 connector on the back that looks like
 it is for RS-232. Though it is for serial, the voltage levels it expects are
-TTL, _not RS-323_, which uses 12V signals. If you hook up a "real" serial port to
+TTL, _not RS-232_, which uses 12V signals. If you hook up a "real" serial port to
 this connector, you will be unhappy.
 
 You can use any of the common FTDI or similar USB-to-serial adapters, and wire
@@ -26,7 +26,7 @@ for the purpose, which also provide galvanic isolation.
 
 Using the library is hopefully straightforward.
 
-First, instantuate a library object:
+First, instantiate a library object:
 
 ```python3
 import maynuo
@@ -63,6 +63,9 @@ while True:
 Note that in battery mode, you have to turn the input on,
 but the device itself will turn the input back off when
 the voltage drops below the terminal voltage you specified.
+The break in the snippet above is just so that the python
+exits; the unit will already have turned itself off when
+that clause is true.
 
 In addition to battery discharge mode, you can easily set
 up any of the other simple modes with `.setCC(current)`,

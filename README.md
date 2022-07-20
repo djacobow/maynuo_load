@@ -6,7 +6,9 @@ Maynuo electronic loads. My load is an M9812. It is the only one I have tested.
 # Setup
 
 `maynuo.py` is a simple library with few extra dependencies, except for
-`serial` which you can install via pip or your package manager, and `crcmodbus`,
+[`serial`](https://pyserial.readthedocs.io/en/latest/pyserial.html) which 
+you can install via pip or your package manager, and
+[`crcmodbus`](https://gitee.com/jdhxyy/crc16-python),
 which you can install with pip.
 
 # A little warning

@@ -7,13 +7,35 @@ import crcmodbus
 
 class MaynuoLoad():
 
-    REGS = {
-        'CMD':       ( 0xa00,  1,  'H' ),
-        'IFIX':      ( 0xa01,  2,  'f' ),
-        'UFIX':      ( 0xa03,  2,  'f' ),
-        'PFIX':      ( 0xa05,  2,  'f' ),
-        'RFIX':      ( 0xa07,  2,  'f' ),
+    CMDS = {
+        'CC': 1,
+        'CV': 2,
+        'CW': 3,
+        'CR': 4,
+        'CC_Soft_Start': 20,
+        'Dynamic_Mode': 25,
+        'Short_Circuit_Mode': 26,
+        'List_Mode': 27,
+        'CC_Loading_And_Unloading_Mode': 30,
+        'CV_Loading_And_Unloading_Mode': 31,
+        'CW_Loading_And_Unloading_Mode': 32,
+        'CR_Loading_And_Unloading_Mode': 33,
+        'CC_Mode_Switch_To_CV_Mode': 34,
+        'CR_Mode_Switch_To_CV_Mode': 36,
+        'Battery_Test_Mode': 38,
+        'CV_Soft_Start': 39,
+        'Changing_System_Parameters':  41,
+        'Input_ON': 42,
+        'Input_OFF': 43,
+    }
 
+
+    REGS = {
+        'CMD':       ( 0xa00,  1,  'H' ), # W  command register
+        'IFIX':      ( 0xa01,  2,  'f' ), # W/R CC set register (A)
+        'UFIX':      ( 0xa03,  2,  'f' ), # W/R CV set register (V)
+        'PFIX':      ( 0xa05,  2,  'f' ), # W/R CP set register (W)
+        'RFIX':      ( 0xa07,  2,  'f' ), # W/R CR set register (ohm)
         'TMCCS':     ( 0x0A09,  2, 'f' ), # W/R Current soft-start rising time register , double type
         'TMCVS':     ( 0x0A0B,  2, 'f' ), # W/R Voltage soft-start rising time register , double type
         'UCCONSET':  ( 0x0A0D,  2, 'f' ), # W/R Constant current load voltage register :double-type
@@ -60,7 +82,12 @@ class MaynuoLoad():
         self.slaveAddrB = slave_addr
         self.reg_write_delay = reg_write_delay
 
-    def addCRC(self, dataB):
+    #
+    # --- private functions ---
+    #
+
+
+    def _addCRC(self, dataB):
         crc = crcmodbus.checksum(dataB)
         crcl = crc & 0xff
         crch = (crc >> 8) & 0xff
@@ -72,7 +99,7 @@ class MaynuoLoad():
         dlen = len(dataB)
         wB += bytes([0x10]) + addr + bytes([0x00, int(dlen/2), dlen])
         wB += dataB
-        wB = self.addCRC(wB)
+        wB = self._addCRC(wB)
         # print('wB',binascii.hexlify(wB), len(wB))
         self.port.write(wB)
         time.sleep(self.reg_write_delay)
@@ -83,16 +110,6 @@ class MaynuoLoad():
         return self._writeReg(self.REGS[name][0], struct.pack('>' + self.REGS[name][2], val))
 
 
-    def setReg(self, name, val):
-        return self._writeByName(name, val)
-
-    def getReg(self, name):
-        rinfo = self.REGS[name]
-        if rinfo is None:
-            raise Exception(f'unknown reg {name}')
-
-        return struct.unpack('>' + rinfo[2], self._readRegRaw(name, rinfo[1]))[0]
-
     def _readRegRaw(self, name, dlen):
         try:
             addr = self.REGS.get(name)[0]
@@ -102,7 +119,7 @@ class MaynuoLoad():
         wB = bytearray([self.slaveAddrB])
         wB += bytes([0x03]) + struct.pack('>HH', addr, dlen)
         self.port.flushInput()
-        wB = self.addCRC(wB)
+        wB = self._addCRC(wB)
         # print('wB',binascii.hexlify(wB), len(wB))
         self.port.write(wB)
         #time.sleep(self.reg_write_delay)
@@ -121,35 +138,61 @@ class MaynuoLoad():
         # print('readB',binascii.hexlify(readB), len(readB))
         return readB
 
+    #
+    # --- public interface ---
+    #
+
+
+    # set a register to the provided val. val should be a float or
+    # an int, as defined in the table of registers above
+    def setReg(self, name, val):
+        return self._writeByName(name, val)
+
+    # return the contents of a register, appropriately converted
+    def getReg(self, name):
+        rinfo = self.REGS[name]
+        if rinfo is None:
+            raise Exception(f'unknown reg {name}')
+
+        return struct.unpack('>' + rinfo[2], self._readRegRaw(name, rinfo[1]))[0]
+
+    # turn on the load
+    # you can also turn it off with inputOn(False)
     def inputOn(self, on=True):
-        cmd = 42 if on else 43
+        cmd = self.CMDS['Input_ON' if on else 'Input_OFF']
         self._writeReg(self.REGS['CMD'][0], bytes((0x00, cmd)))
         
+    # turn off the load
     def inputOff(self, off=True):
         return self.inputOn(not off) 
         
     def setCC(self, curr=0):
         self._writeByName('IFIX',curr)
-        self._writeByName('CMD', bytes((0x00, 0x01)))
+        self._writeByName('CMD', bytes((0x00, self.CMDS['CC'])))
 
     def setCV(self, volt=0):
         self._writeByName('VFIX', volt)
-        self._writeByName('CMD', bytes((0x00, 0x02)))
+        self._writeByName('CMD', bytes((0x00, self.CMDS['CV'])))
 
     def setCP(self, pwr=0):
         self._writeByName('PFIX', pwr)
-        self._writeByName('CMD', bytes((0x00, 0x03)))
+        self._writeByName('CMD', bytes((0x00, self.CMDS['CW'])))
 
     def setCR(self, res=0):
         self._writeByName('RFIX', res) 
-        self._writeByName('CMD', bytes((0x00, 0x04)))
+        self._writeByName('CMD', bytes((0x00, self.CMDS['CR'])))
 
-
+    # turn on battery testing mode. This mode automatically
+    # shuts off when the battery voltage goes below the
+    # vend value. Total battery capacity is accumulated in
+    # the BATT register, and this is *not* automatically zero'd
+    # by this call. If you want it zero'd, do it directly
     def battTest(self, curr=0.250, vend=3.0):
         self._writeByName('IFIX',curr)
         self._writeByName('UBATTEND',vend)
-        self._writeByName('CMD', bytes((0x00, 38)))
+        self._writeByName('CMD', bytes((0x00, self.CMDS['Battery_Test_Mode'])))
 
+    # a convenience accessor for getting the values of a few common registers
     def getSetupRegs(self):
         cmd, ifix, ufix, pfix, rfix = struct.unpack('>Hffff', self._readRegRaw('CMD',9))
         return {
@@ -160,6 +203,7 @@ class MaynuoLoad():
             'rfix': rfix,
         }
 
+    # a convenience accessor for getting the values of the measurement registers
     def getOperatingPoint(self):
         ret = self._readRegRaw('U', 4)
         (v,i) = struct.unpack('>ff', ret)

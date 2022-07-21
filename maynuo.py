@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
-import struct, time, binascii, datetime
+import struct, time, binascii, datetime, sys
 
 import serial
 import crcmodbus
+
+def debug(*args, **kwargs):
+    if False:
+        print(*args, **kwargs)
+        sys.stdout.flush()
+
+# Register definitions and examples from the Maynuo user manual, available
+# from http://www.maynuo.com
 
 class MaynuoLoad():
 
@@ -76,6 +84,30 @@ class MaynuoLoad():
 
     }
 
+    COIL_FLAGS = {
+        'PC1':        0x0500, # 1 W/R When remote control status bit is 1, front key panel unable
+        'PC2':        0x0501, # 1 W/R When local prohibition bit is 1, not allow to 
+                              # use key "Shift +7" to snatch away the front panel control.
+        'TRIG':       0x0502, # 1 W/R Trigger tagged: triggered once by software
+        'REMOTE':     0x0503, # 1 W/R 1: remote input voltage
+        'ISTATE':     0x0510, # 1 R Input status: 1- input ON, 0- intput OFF
+        'TRACK':      0x0511, # 1 R Tracking status: 1-voltage tracking; 0-current tracking
+        'MEMORY':     0x0512, # 1 R 1:input state memory
+        'VOICEEN':    0x0513, # 1 R 1: key sound ON/OFF
+        'CONNECT':    0x0514, # 1 R 1: multi 0= single
+        'ATEST':      0x0515, # 1 R 1: Automatic test mode
+        'ATESTUN':    0x0516, # 1 R 1: Automatic test pattern waiting to trigger
+        'ATESTPASS':  0x0517, # 1 R 1: success automatic test success ,0: automatic test failed
+        'IOVER':      0x0520, # 1 R 1:over-current tag
+        'UOVER':      0x0521, # 1 R 1: over-voltage tag
+        'POVER':      0x0522, # 1 R 1: over- Power tag
+        'HEAT':       0x0523, # 1 R 1: over-heat tag
+        'REVERSE':    0x0524, # 1 R 1: reverse tag
+        'UNREG':      0x0525, # 1 R 1: register parameter failed tag
+        'ERREP':      0x0526, # 1 R 1: EPPROM error tag
+        'ERRCAL':     0x0527, # 1 R 1: calibration data error tag 
+    }
+ 
     def __init__(self, port = '/dev/ttyUSB0', baud=9600, slave_addr=1,
                  reg_write_delay=0.10):
         self.port = serial.Serial(port, baud, parity='N', timeout=1)
@@ -87,56 +119,100 @@ class MaynuoLoad():
     #
 
 
-    def _addCRC(self, dataB):
+    def __addCRC(self, dataB):
         crc = crcmodbus.checksum(dataB)
         crcl = crc & 0xff
         crch = (crc >> 8) & 0xff
         return dataB + bytes([crch, crcl]) 
 
-    def _writeReg(self, addr, dataB):
-        wB = bytearray([self.slaveAddrB])
-        addr = struct.pack('>H',addr)
+    def __checkWriteResponse(self, addr, func, len_or_val):
+        readB = self.port.read(8)
+        saddr, rfunc, raddr, rval, crc = struct.unpack('>BBHHH', readB)
+        if saddr != self.slaveAddrB:
+            raise Exception(f'Device slave address {saddr} does not match request {self.slaveAddrB}')
+        if rfunc != func:
+            raise Exception(f'Device return function {func} does not match request {rfunc}')
+        if raddr != addr:
+            raise Exception(f'Device return address {raddr} does not match written addr {addr}')
+        if rval != len_or_val:
+            raise Exception(f'Device return reg count {rval} does not match written reg count {len_or_val}')
+        own_crc = crcmodbus.checksum(readB[:6])
+        if own_crc != crc:
+            raise Exception(f'Read CRC {crc} does not match expected {own_crc}')
+
+    def __writeRegRaw(self, addr, dataB):
+        debug('__writeRegRaw', self, addr, binascii.hexlify(dataB))
+
         dlen = len(dataB)
-        wB += bytes([0x10]) + addr + bytes([0x00, int(dlen/2), dlen])
+        wB = struct.pack('>BBHHB', self.slaveAddrB, 0x10, addr, int(dlen/2), dlen)
         wB += dataB
-        wB = self._addCRC(wB)
-        # print('wB',binascii.hexlify(wB), len(wB))
+        wB = self.__addCRC(wB)
+        debug('wB',binascii.hexlify(wB), len(wB))
         self.port.write(wB)
         time.sleep(self.reg_write_delay)
+        self.__checkWriteResponse(addr, 0x10, int(dlen/2))
 
-    def _writeByName(self, name, val):
+    def __writeCoilRaw(self, addr, v):
+        wval = 0xff00 if v else 0x0000
+        wB = struct.pack('>BBHH', self.slaveAddrB, 0x05, addr, wval)
+        wB = self.__addCRC(wB)
+        debug('__writeCoilRaw', 'wB', binascii.hexlify(wB))
+        self.port.write(wB)
+        time.sleep(self.reg_write_delay)
+        self.__checkWriteResponse(addr, 0x05, wval)
+
+        
+    def __writeByName(self, name, val):
+        debug('__writeByName', self, name, val)
         if isinstance(val, (bytes, bytearray)):
-            return self._writeReg(self.REGS[name][0], val)
-        return self._writeReg(self.REGS[name][0], struct.pack('>' + self.REGS[name][2], val))
+            return self.__writeRegRaw(self.REGS[name][0], val)
+        return self.__writeRegRaw(self.REGS[name][0], struct.pack('>' + self.REGS[name][2], val))
 
 
-    def _readRegRaw(self, name, dlen):
+    def __readGenericRaw(self, addr, source, dlen):
+        debug('__readGenericRaw', self, addr, source, dlen)
+        wB = bytearray((self.slaveAddrB, source))
+        wB += struct.pack('>HH', addr, dlen)
+        wB = self.__addCRC(wB)
+        debug('__readGenericRaw wB',binascii.hexlify(wB), len(wB))
+        self.port.write(wB)
+        time.sleep(0.05)
+        ret = self.port.read(3)
+        debug('ret',binascii.hexlify(ret), len(ret))
+        if int(ret[0]) != self.slaveAddrB:
+            raise Exception(f'Device slave address {ret[0]} does not match request {self.slaveAddrB}')
+        if int(ret[1]) != source:
+            raise Exception(f'Device return function {ret[1]} does not match request {source}')
+        readB = self.port.read(ret[2])
+        (ret_crc,) = struct.unpack('>H',self.port.read(2))
+        own_crc = crcmodbus.checksum(ret + readB)
+        if own_crc != ret_crc:
+            raise Exception(f'Read CRC {ret_crc} does not match expected {own_crc}')
+        return readB
+
+    def __writeCoil(self, name, val):
+        try:
+            addr = self.COIL_FLAGS.get(name)
+        except Exception as e:
+            raise Exception(f'unknown coil bit {name}')
+        return self.__writeCoilRaw(addr, val)
+
+    def __readCoil(self, name):
+        try:
+            addr = self.COIL_FLAGS.get(name)
+        except Exception as e:
+            raise Exception(f'unknown coil bit {name}')
+        return self.__readGenericRaw(addr, 0x01, 1)
+
+
+    def __readRegRaw(self, name, dlen):
         try:
             addr = self.REGS.get(name)[0]
         except Exception as e:
             raise Exception(f'unknown register {name}')
 
-        wB = bytearray([self.slaveAddrB])
-        wB += bytes([0x03]) + struct.pack('>HH', addr, dlen)
-        self.port.flushInput()
-        wB = self._addCRC(wB)
-        # print('wB',binascii.hexlify(wB), len(wB))
-        self.port.write(wB)
-        #time.sleep(self.reg_write_delay)
-        ret = self.port.read(3)
-        # print('ret',binascii.hexlify(ret), len(ret))
-        if int(ret[0]) != self.slaveAddrB:
-            raise Exception(f'Device slave address {ret[0]} does not match request {self.slaveAddrB}')
-        if int(ret[1]) != 0x03:
-            raise Exception(f'Device return function does not match request 0x03')
-        ret_len        = ret[2]
-        readB = self.port.read(ret_len)
-        (ret_crc,) = struct.unpack('>H',self.port.read(2))
-        own_crc = crcmodbus.checksum(ret + readB)
-        if own_crc != ret_crc:
-            raise Exception(f'Read CRC {ret_crc} does not match expected {own_crc}')
-        # print('readB',binascii.hexlify(readB), len(readB))
-        return readB
+        return self.__readGenericRaw(addr, 0x03, dlen)
+
 
     #
     # --- public interface ---
@@ -146,7 +222,8 @@ class MaynuoLoad():
     # set a register to the provided val. val should be a float or
     # an int, as defined in the table of registers above
     def setReg(self, name, val):
-        return self._writeByName(name, val)
+        debug('setReg', self, name, val)
+        return self.__writeByName(name, val)
 
     # return the contents of a register, appropriately converted
     def getReg(self, name):
@@ -154,33 +231,33 @@ class MaynuoLoad():
         if rinfo is None:
             raise Exception(f'unknown reg {name}')
 
-        return struct.unpack('>' + rinfo[2], self._readRegRaw(name, rinfo[1]))[0]
+        return struct.unpack('>' + rinfo[2], self.__readRegRaw(name, rinfo[1]))[0]
 
     # turn on the load
     # you can also turn it off with inputOn(False)
     def inputOn(self, on=True):
         cmd = self.CMDS['Input_ON' if on else 'Input_OFF']
-        self._writeReg(self.REGS['CMD'][0], bytes((0x00, cmd)))
+        self.__writeRegRaw(self.REGS['CMD'][0], bytes((0x00, cmd)))
         
     # turn off the load
     def inputOff(self, off=True):
         return self.inputOn(not off) 
         
     def setCC(self, curr=0):
-        self._writeByName('IFIX',curr)
-        self._writeByName('CMD', bytes((0x00, self.CMDS['CC'])))
+        self.__writeByName('IFIX',curr)
+        self.__writeByName('CMD', bytes((0x00, self.CMDS['CC'])))
 
     def setCV(self, volt=0):
-        self._writeByName('VFIX', volt)
-        self._writeByName('CMD', bytes((0x00, self.CMDS['CV'])))
+        self.__writeByName('VFIX', volt)
+        self.__writeByName('CMD', bytes((0x00, self.CMDS['CV'])))
 
     def setCP(self, pwr=0):
-        self._writeByName('PFIX', pwr)
-        self._writeByName('CMD', bytes((0x00, self.CMDS['CW'])))
+        self.__writeByName('PFIX', pwr)
+        self.__writeByName('CMD', bytes((0x00, self.CMDS['CW'])))
 
     def setCR(self, res=0):
-        self._writeByName('RFIX', res) 
-        self._writeByName('CMD', bytes((0x00, self.CMDS['CR'])))
+        self.__writeByName('RFIX', res) 
+        self.__writeByName('CMD', bytes((0x00, self.CMDS['CR'])))
 
     # turn on battery testing mode. This mode automatically
     # shuts off when the battery voltage goes below the
@@ -188,13 +265,13 @@ class MaynuoLoad():
     # the BATT register, and this is *not* automatically zero'd
     # by this call. If you want it zero'd, do it directly
     def battTest(self, curr=0.250, vend=3.0):
-        self._writeByName('IFIX',curr)
-        self._writeByName('UBATTEND',vend)
-        self._writeByName('CMD', bytes((0x00, self.CMDS['Battery_Test_Mode'])))
+        self.__writeByName('IFIX',curr)
+        self.__writeByName('UBATTEND',vend)
+        self.__writeByName('CMD', bytes((0x00, self.CMDS['Battery_Test_Mode'])))
 
     # a convenience accessor for getting the values of a few common registers
     def getSetupRegs(self):
-        cmd, ifix, ufix, pfix, rfix = struct.unpack('>Hffff', self._readRegRaw('CMD',9))
+        cmd, ifix, ufix, pfix, rfix = struct.unpack('>Hffff', self.__readRegRaw('CMD',9))
         return {
             'cmd': cmd,
             'ifix': ifix,
@@ -205,7 +282,7 @@ class MaynuoLoad():
 
     # a convenience accessor for getting the values of the measurement registers
     def getOperatingPoint(self):
-        ret = self._readRegRaw('U', 4)
+        ret = self.__readRegRaw('U', 4)
         (v,i) = struct.unpack('>ff', ret)
         bcap = self.getReg('BATT')
         return {
@@ -215,21 +292,53 @@ class MaynuoLoad():
             'bcap': bcap,
         }
 
+    def getCoil(self, name):
+        return True if self.__readCoil(name)[0] & 0x01 else False
+
+    def setCoil(self, name, v):
+        return self.__writeCoil(name, v)
+
      
 if __name__ == '__main__':
+    import sys
     m = MaynuoLoad('/dev/ttyUSB0', 9600, 1)
 
-    m.setReg('BATT', 0)
-    m.inputOff()
     if True:
+        m.setReg('IFIX', 0.1)
+        print(m.getReg('IFIX'))
+        print(m.getOperatingPoint())
+        m.setCoil('PC1', True)
+
+    if True:
+        for n in m.COIL_FLAGS:
+            print(n, m.getCoil(n))
+        for n in m.REGS:
+            print(n, m.getReg(n))
+
+    if True:
+        for i in range(3):
+            try:
+                print(i, m.getOperatingPoint())
+            except Exception as e:
+                print(i, e)
+
+    if True:
+        m.setReg('BATT', 0)
+        m.inputOff()
         m.battTest(0.150, 3)
         m.inputOn()
-        for i in range(5):
-            print(m.getOperatingPoint())
-            time.sleep(5)
-        m.inputOff()
+        for i in range(4):
+            try:
+                op = m.getOperatingPoint()
+                print(i,op)
+            except Exception as e:
+                print(i,e)
+            time.sleep(1)
         m.inputOff()
         print(m.getOperatingPoint())
 
-    for n in m.REGS:
-        print(n, m.getReg(n))
+    if True:
+        for n in m.COIL_FLAGS:
+            print(n, m.getCoil(n))
+        for n in m.REGS:
+            print(n, m.getReg(n))

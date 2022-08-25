@@ -248,7 +248,7 @@ class MaynuoLoad():
         self.__writeByName('CMD', bytes((0x00, self.CMDS['CC'])))
 
     def setCV(self, volt=0):
-        self.__writeByName('VFIX', volt)
+        self.__writeByName('UFIX', volt)
         self.__writeByName('CMD', bytes((0x00, self.CMDS['CV'])))
 
     def setCP(self, pwr=0):
